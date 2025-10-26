@@ -48,7 +48,7 @@ async function getQuizQuestions(text, count, type = "MCQ") {
     quizContainer.appendChild(tempMessage);
     quizContainer.scrollTop = quizContainer.scrollHeight;
 
-    const response = await fetch("http://127.0.0.1:5000/generate_quiz", {
+    const response = await fetch("https://backend-ktnv.onrender.com/generate_quiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, count, type }),
@@ -134,3 +134,4 @@ function renderQuiz(questions, text, count, type) {
     result.innerHTML = `<p>You got ${score} out of ${questions.length} correct!</p>`;
   });
 }
+
