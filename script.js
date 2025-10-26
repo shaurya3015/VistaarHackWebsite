@@ -31,7 +31,7 @@ document.getElementById("file-input").addEventListener("change", async (event) =
     formData.append("pdf_file", file);
 
     try {
-        const response = await fetch("http://localhost:5000/upload_pdf", {
+        const response = await fetch("https://backend-ktnv.onrender.com/upload_pdf", {
             method: "POST",
             body: formData
         });
@@ -81,5 +81,6 @@ document.getElementById("file-input").addEventListener("change", async (event) =
     PDFViewer.zoomOut();
   });
 });
+
 
 
