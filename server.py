@@ -81,8 +81,13 @@ def upload_pdf():
         pdf_pages = pages
         pdf_vector_store = vector_store
         pdf_retriever = retriever
+        #print("PDF found + retriever made")
         print("PDF found + retriever made")
-        os.remove("chat_history.pkl")
+        try:
+            os.remove("chat_history.pkl")
+
+        except FileNotFoundError:
+            pass
 
         return jsonify({
             "message": f"PDF uploaded! Pages: {len(pages)}, Chunks: {len(chunks)}"
@@ -170,4 +175,5 @@ def ask():
 if __name__ == "__main__":
     print("Starting Flask AI server on http://127.0.0.1:5000")
     app.run(port=5000, debug=True, use_reloader=False)
+
 
