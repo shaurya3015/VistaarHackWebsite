@@ -12,3 +12,5 @@ transformers
 python-dotenv
 pypdf
 gunicorn
+sentence-transformers
+
