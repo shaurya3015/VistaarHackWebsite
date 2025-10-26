@@ -16,7 +16,13 @@ from quiz_backend import register_quiz_routes
 
 app = Flask(__name__)
 register_quiz_routes(app)
-CORS(app)
+allowed_origins = [
+    "https://pdf.divyamsood.com",      # Your custom domain (primary)
+    "https://fronten-2xyz-onrender.com"         # Your Render subdomain (secondary/alias)
+]
+
+# Configure CORS to allow access from EITHER domain for all routes
+CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
 # Your PDF file path
 
@@ -175,5 +181,6 @@ def ask():
 if __name__ == "__main__":
     print("Starting Flask AI server on http://127.0.0.1:5000")
     app.run(port=5000, debug=True, use_reloader=False)
+
 
 
