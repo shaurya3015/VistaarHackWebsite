@@ -13,6 +13,5 @@ python-dotenv
 pypdf
 gunicorn
 sentence-transformers
-faiss-cpu
-sentence_transformers
+
 
