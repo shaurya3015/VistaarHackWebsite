@@ -7,11 +7,9 @@ langchain-huggingface
 langchain-text-splitters
 faiss-cpu
 huggingface-hub
-torch
-transformers
 python-dotenv
 pypdf
 gunicorn
-sentence-transformers
+
 
 
