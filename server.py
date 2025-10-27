@@ -16,7 +16,13 @@ from quiz_backend import register_quiz_routes
 
 app = Flask(__name__)
 register_quiz_routes(app)
-CORS(app)  # Allow all origins
+#CORS(app)  
+CORS(app, resources={
+    r"/ask": {"origins": "*"},
+    r"/upload_pdf": {"origins": "*"}
+    # If you are using quiz_backend.py, add its routes here too
+    # e.g., r"/quiz/*": {"origins": "*"}
+})# Allow all origins
 
 # ===============================
 # CRITICAL: SET YOUR API TOKEN IN RENDER'S ENVIRONMENT VARIABLES
@@ -29,14 +35,12 @@ CORS(app)  # Allow all origins
 # ===============================
 # Global Read-Only Objects & Config
 # ===============================
+pdf_retriever = None
+chat_history = []
 
-# Define file paths
-UPLOAD_FOLDER = "uploads"
-FAISS_INDEX_PATH = "my_faiss_index"
-CHAT_HISTORY_FILE = "chat_history.pkl"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# Load Embeddings Model once (This is fine, it's read-only)
+# ===============================
+# Global Read-Only Objects (Loaded once at startup)
+# ===============================
 print("Loading embeddings model...")
 hf_embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-mpnet-base-v2",
@@ -45,7 +49,6 @@ hf_embeddings = HuggingFaceEmbeddings(
 )
 print("Embeddings model loaded.")
 
-# Load LLM once (This is fine, it's read-only)
 print("Loading LLM...")
 llm = HuggingFaceEndpoint(
     repo_id="mistralai/Mistral-7B-Instruct-v0.3",
@@ -77,61 +80,80 @@ Question: {question}
 # ===============================
 @app.route("/upload_pdf", methods=["POST"])
 def upload_pdf():
+    # We must modify the global variables
+    global pdf_retriever, chat_history
+    
     print("PDF upload request received...")
     if "pdf_file" not in request.files:
+        print("Error: No file part in request.")
         return jsonify({"error": "No file part"}), 400
 
     file = request.files["pdf_file"]
     if file.filename == "":
+        print("Error: No selected file.")
         return jsonify({"error": "No selected file"}), 400
 
     if file and file.filename.endswith(".pdf"):
+        # We must save the file temporarily to give PyPDFLoader a path
+        UPLOAD_FOLDER = "uploads" # This folder is temporary and will be wiped
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
         pdf_path = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(pdf_path)
-        print(f"PDF saved to {pdf_path}")
-
-        # Load PDF pages
-        loader = PyPDFLoader(pdf_path)
-        pages = loader.load()
-
-        if not pages:
-            print("PDF is empty")
-            return jsonify({"error": "PDF is empty"}), 400
-
-        # Split pages into chunks
-        print("Splitting documents...")
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-        chunks = splitter.split_documents(pages)
-
-        if not chunks:
-            print("No text found in PDF")
-            return jsonify({"error": "No text found in PDF"}), 400
-
-        # Create embeddings and FAISS vector store
-        print("Creating FAISS vector store...")
-        # Use the global embeddings model
-        vector_store = FAISS.from_documents(chunks, hf_embeddings)
         
-        # Save to disk - This is the persistent state
-        vector_store.save_local(FAISS_INDEX_PATH)
-        print(f"Vector store saved to {FAISS_INDEX_PATH}")
-
-        # ---!! REMOVED GLOBAL VARIABLE ASSIGNMENTS !! ---
-        # We no longer need to store the retriever in a global variable.
-        # We will load it from the file in /ask
-
-        # Clear chat history on new PDF upload
         try:
-            os.remove(CHAT_HISTORY_FILE)
-            print("Cleared old chat history.")
-        except FileNotFoundError:
-            pass  # No history file to clear, which is fine
-        
-        return jsonify({
-            "message": f"PDF uploaded! Pages: {len(pages)}, Chunks: {len(chunks)}"
-        })
+            file.save(pdf_path)
+            print(f"PDF temporarily saved to {pdf_path}")
 
-    return jsonify({"error": "Invalid file type"}), 400
+            # Load PDF pages
+            loader = PyPDFLoader(pdf_path)
+            pages = loader.load()
+
+            if not pages:
+                print("Error: PDF is empty or could not be read.")
+                return jsonify({"error": "PDF is empty"}), 400
+
+            # Split pages into chunks
+            print("Splitting documents...")
+            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+            chunks = splitter.split_documents(pages)
+
+            if not chunks:
+                print("Error: No text found in PDF after splitting.")
+                return jsonify({"error": "No text found in PDF"}), 400
+
+            # Create embeddings and FAISS vector store IN MEMORY
+            print("Creating FAISS vector store in memory...")
+            vector_store = FAISS.from_documents(chunks, hf_embeddings)
+            
+            # ---!! THIS IS THE CORE LOGIC !! ---
+            # 1. Store the retriever in the global variable (in RAM)
+            pdf_retriever = vector_store.as_retriever(
+                search_type="mmr", search_kwargs={"k": 3}
+            )
+            
+            # 2. Clear the global chat history for the new session
+            chat_history = []
+            
+            print("Vector store created in RAM and ready.")
+            
+            return jsonify({
+                "message": f"PDF processed! Pages: {len(pages)}, Chunks: {len(chunks)}"
+            })
+
+        except Exception as e:
+            print(f"An error occurred during PDF processing: {e}")
+            return jsonify({"error": f"Server error: {e}"}), 500
+        
+        finally:
+            # 3. Clean up the temporary file
+            if os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                    print(f"Removed temp file {pdf_path}")
+                except Exception as e:
+                    print(f"Warning: Could not remove temp file: {e}")
+
+    print("Error: Invalid file type.")
+    return jsonify({"error": "Invalid file type, must be .pdf"}), 400
 
 
 # =====================================
@@ -139,83 +161,64 @@ def upload_pdf():
 # =====================================
 @app.route("/ask", methods=["POST"])
 def ask():
-    # ---!! THIS IS THE MAIN FIX !! ---
-    # 1. Check if the vector store file exists
-    if not os.path.exists(FAISS_INDEX_PATH):
-        print("Error: FAISS index not found. PDF not uploaded.")
+    # We will READ from the global variables
+    global pdf_retriever, chat_history
+    
+    # 1. Check if the retriever exists in memory
+    if pdf_retriever is None:
+        print("Error: PDF retriever not found in memory. User needs to upload.")
         return jsonify({"response": "No PDF has been uploaded yet. Please upload a PDF first."}), 400
 
-    # 2. Load the retriever from the file
+    # --- Everything below assumes pdf_retriever exists ---
     try:
-        print("Loading FAISS index from disk...")
-        # We must use the *same* embeddings model to load it
-        vector_store = FAISS.load_local(
-            FAISS_INDEX_PATH, 
-            hf_embeddings, 
-            allow_dangerous_deserialization=True # Required for FAISS
-        )
-        pdf_retriever = vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
-        print("Retriever loaded successfully.")
+        data = request.get_json()
+        prompt = data.get("prompt")
+        context_text = data.get("context") 
+
+        if not prompt:
+            print("Error: No prompt received in /ask request.")
+            return jsonify({"response": "No prompt received."}), 400
+
+        # chat_history is already loaded from the global variable
+        chat_history.append({"role": "user", "content": prompt})
+
+        # Retrieve relevant docs
+        print(f"Retrieving documents for prompt: {prompt}")
+        retrieval_query = prompt + str(context_text or "") 
+        retrieved_docs = pdf_retriever.invoke(retrieval_query)
+        retrieved_context = "\n\n".join(doc.page_content for doc in retrieved_docs)
+
+        # Merge with frontend-sent context (optional)
+        full_context = (context_text or "") + "\n\n" + retrieved_context
+
+        # Combine chat history
+        chat_history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
+
+        # Create final prompt
+        final_prompt = prompt_template.invoke({
+            "context": full_context,
+            "question": prompt,
+            "chat_history_text": chat_history_text
+        })
+
+        # Run model
+        print("Invoking model...")
+        result = model.invoke(final_prompt)
+        ai_response = result.content if hasattr(result, "content") else str(result)
+        print(f"Model response: {ai_response}")
+
+        # Save chat history to the global variable
+        chat_history.append({"role": "ai", "content": ai_response})
+        
+        return jsonify({"response": ai_response})
+
     except Exception as e:
-        print(f"Error loading FAISS index: {e}")
-        return jsonify({"response": f"Error loading PDF knowledge base: {e}"}), 500
-    # ---!! END OF FIX !! ---
-
-
-    # Now the rest of your code will work, because pdf_retriever is a real object
-    data = request.get_json()
-    prompt = data.get("prompt")
-    context_text = data.get("context") # This is context from the frontend, if any
-
-    if not prompt:
-        return jsonify({"response": "No prompt received."}), 400
-
-    # Load chat history from file
-    if os.path.exists(CHAT_HISTORY_FILE):
-        with open(CHAT_HISTORY_FILE, "rb") as f:
-            chat_history = pickle.load(f)
-    else:
-        chat_history = []
-
-    # Append user question
-    chat_history.append({"role": "user", "content": prompt})
-
-    # Retrieve relevant docs
-    print(f"Retrieving documents for prompt: {prompt}")
-    # We use the prompt *and* any context from the frontend for retrieval
-    retrieval_query = prompt + str(context_text or "") 
-    retrieved_docs = pdf_retriever.invoke(retrieval_query)
-    retrieved_context = "\n\n".join(doc.page_content for doc in retrieved_docs)
-
-    # Merge with frontend-sent context (optional)
-    full_context = (context_text or "") + "\n\n" + retrieved_context
-
-    # Combine chat history
-    chat_history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
-
-    # Create final prompt
-    final_prompt = prompt_template.invoke({
-        "context": full_context,
-        "question": prompt,
-        "chat_history_text": chat_history_text
-    })
-
-    # Run model
-    print("Invoking model...")
-    result = model.invoke(final_prompt)
-    ai_response = result.content if hasattr(result, "content") else str(result)
-    print(f"Model response: {ai_response}")
-
-    # Save chat history
-    chat_history.append({"role": "ai", "content": ai_response})
-    with open(CHAT_HISTORY_FILE, "wb") as f:
-        pickle.dump(chat_history, f)
-
-    return jsonify({"response": ai_response})
+        print(f"An error occurred during /ask: {e}")
+        return jsonify({"response": f"An error occurred: {e}"}), 500
 
 
 if __name__ == "__main__":
-    print("Starting Flask AI server on http://127.0.0.1:5000")
-    # Port 5000 is common, but Render uses 10000. 
-    # Render ignores this and uses its own port setting, so this is fine.
-    app.run(port=5000, debug=True, use_reloader=False)
+    print("Starting Flask AI server in debug mode on http://127.0.0.1:5000")
+    # Port 5000 is fine for local. Render/Gunicorn will ignore this.
+    app.run(port=5000, debug=True)
+
