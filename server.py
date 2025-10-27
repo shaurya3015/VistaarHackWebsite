@@ -43,7 +43,7 @@ chat_history = []
 # ===============================
 print("Loading embeddings model...")
 hf_embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-mpnet-base-v2",
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
     model_kwargs={"device": "cpu"},
     encode_kwargs={"normalize_embeddings": True},
 )
@@ -221,4 +221,5 @@ if __name__ == "__main__":
     print("Starting Flask AI server in debug mode on http://127.0.0.1:5000")
     # Port 5000 is fine for local. Render/Gunicorn will ignore this.
     app.run(port=5000, debug=True)
+
 
